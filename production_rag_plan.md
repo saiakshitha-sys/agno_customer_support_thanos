@@ -153,9 +153,9 @@ This phase focuses on the intelligence layer and context retention.
     *   **Model**: Gemini 1.5 Flash.
     *   **Logic**: Performs hybrid search across `cs_vectordb_v2` using the `userRole` and `tenantId` from the request context to set security filters.
     *   **Persistence**: Uses `PostgresDb` to store the last 10 messages, ensuring users can continue conversations after a refresh.
-*   **Analyzer Agent (The Facilitator)**: 
-    *   **Role**: Monitors the conversation specifically for "Ticket Intent," replicating the n8n "AI Agent1" behavior.
-    *   **Tools**: Equipped with a `create_support_ticket` tool to perform callbacks to the Thanos Backend.
+    *   **Analyzer Agent (The Facilitator)**: 
+        *   **Role**: Monitors the conversation for "Ticket Intent" OR "Successful Resolution," replicating the logic of n8n "AI Agent1" and "User Confirms Ticket?" nodes. It generates a structured summary of the conversation in both scenarios.
+        *   **Tools**: Equipped with `create_support_ticket` and `save_conversation_summary` tools to perform callbacks to the Thanos Backend.
 
 ### Python: Agent Team & Ticket Tool Implementation
 ```python
@@ -189,12 +189,14 @@ def save_conversation_summary(conversation_id: str, summary: str, topic: str, re
     """
     Persists the final conversation summary to the backend.
     """
-    url = "https://backend-prod.julleyonline.co.in/api/v1/customer-support/agent-callback/summary"
+    # Use existing n8n/conversation endpoint or create a specific summary endpoint 
+    # matching the n8n logic: https://backend-prod.julleyonline.co.in/api/v1/customer-support/n8n/conversation
+    url = "https://backend-prod.julleyonline.co.in/api/v1/customer-support/n8n/conversation" 
     payload = {
         "conversationId": conversation_id,
         "summary": summary,
         "topic": topic,
-        "status": resolution_status # 'RESOLVED' or 'TICKET_CREATED'
+        # status mapping if needed by backend logic
     }
     requests.post(url, json=payload)
     return "Summary saved."
@@ -220,9 +222,9 @@ def get_support_team(user_context):
         instructions=[
             "Monitor conversation history for unresolved issues or explicit ticket requests.",
             "If the user says 'Thank you' or indicates the issue is resolved:",
-            "  1. Generate a brief summary of the resolution.",
+            "  1. Generate a structured summary of the conversation.",
             "  2. Provide a friendly closing message (vary the phrasing).",
-            "  3. Call the 'save_conversation_summary' tool to persist the resolution.",
+            "  3. Call the 'save_conversation_summary' tool to persist the summary.",
             "If the user confirms they want a ticket:",
             "  1. Summarize the main issue.",
             "  2. Use the 'create_support_ticket' tool.",
@@ -355,14 +357,15 @@ def sync_to_backend(agent, response):
     # Prepare payload for ThanosBE
     payload = {
         "conversationId": agent.session_id,
-        "userId": agent.user_id, # Ensure this is set in context
+        "userId": agent.user_id, 
         "messages": [
             {"senderType": "user", "content": agent.last_user_message},
             {"senderType": "ai", "content": response.content}
         ]
     }
     # Async call to Backend (fire and forget)
-    requests.post("https://backend-prod.../messages", json=payload)
+    # URL matches n8n "Save Messages1" node
+    requests.post("https://backend-prod.julleyonline.co.in/api/v1/customer-support/n8n/messages", json=payload)
 
 support_agent = Agent(
     ...,
