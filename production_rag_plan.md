@@ -4,10 +4,10 @@ overview: A comprehensive plan to integrate the Agno AgentOS RAG system with the
 todos:
   - id: phase-1-kb-setup
     content: Setup Single-Table PgVector with Metadata Filters and Ingestion Script
-    status: pending
+    status: completed
   - id: phase-2-agent-team
     content: Develop Agno Team with Hybrid Search and Persistent Chat History
-    status: pending
+    status: completed
   - id: phase-3-be-integration
     content: Refactor ThanosBE to point to Agno AgentOS and handle updated callbacks
     status: pending
@@ -76,8 +76,8 @@ import os
 from datetime import datetime
 
 # Database configuration
-DB_URL = "postgresql+psycopg://ai:ai@localhost:5432/thanos"
-TABLE_NAME = "cs_vectordb_v2"
+DB_URL = os.getenv("DATABASE_URL")
+TABLE_NAME = "cs_agno_vectordb1"
 SERVICE_ACCOUNT_FILE = 'credentials.json'
 FOLDER_ID = "1MqejgA65iohmi9Oqvq_6Y9AMucrONc_Y" # Target Folder ID
 
@@ -147,93 +147,144 @@ if __name__ == "__main__":
 
 ## 3. Phase 2: Agent Team & Session Management
 
-This phase focuses on the intelligence layer and context retention.
+This phase focuses on replicating the agentic logic from the production n8n workflow, ensuring precise input validation, permission-based tool routing, and dual-purpose session management.
 
-*   **Support Agent (The Core)**: 
-    *   **Model**: Gemini 1.5 Flash.
-    *   **Logic**: Performs hybrid search across `cs_vectordb_v2` using the `userRole` and `tenantId` from the request context to set security filters.
-    *   **Persistence**: Uses `PostgresDb` to store the last 10 messages, ensuring users can continue conversations after a refresh.
-    *   **Analyzer Agent (The Facilitator)**: 
-        *   **Role**: Monitors the conversation for "Ticket Intent" OR "Successful Resolution," replicating the logic of n8n "AI Agent1" and "User Confirms Ticket?" nodes. It generates a structured summary of the conversation in both scenarios.
-        *   **Tools**: Equipped with `create_support_ticket` and `save_conversation_summary` tools to perform callbacks to the Thanos Backend.
+### A. Input Validation & Identity Mapping
+Every request to the Agno AgentOS will first pass through a validation layer (replicating the "Validate Input1" node).
 
-### Python: Agent Team & Ticket Tool Implementation
 ```python
-from agno.agent import Agent
-from agno.db.postgres import PostgresDb
-from agno.models.google import Gemini
-from agno.tools import tool
-import requests
-
-# Session Storage Configuration
-db = PostgresDb(db_url=DB_URL, session_table="cs_agent_sessions")
-
-@tool
-def create_support_ticket(title: str, description: str, priority: str, category: str, conversation_id: str, user_id: str, tenant_id: str) -> str:
-    """
-    Creates a formal support ticket in the Thanos Backend via callback.
-    """
-    url = "https://backend-prod.julleyonline.co.in/api/v1/customer-support/agent-callback/ticket"
-    payload = {
-        "title": title, "description": description, "priority": priority,
-        "category": category, "conversationId": conversation_id,
-        "userId": user_id, "tenantId": tenant_id
+def validate_user_context(payload):
+    # Map UserRole to permission flags
+    ROLE_MAP = {
+        "PILOT": {"perm": "1", "superperm": 0, "allperm": 0},
+        "CUSTOMER_SUPPORT": {"perm": "2", "superperm": 0, "allperm": 0},
+        "TECHNICIAN": {"perm": "3", "superperm": 0, "allperm": 0},
+        "CUSTOMER_ADMIN": {"perm": 0, "superperm": "1", "allperm": 0},
+        "SENIOR_CS": {"perm": 0, "superperm": "2", "allperm": 0},
+        "ADMIN": {"perm": 0, "superperm": 0, "allperm": 1},
+        "USER": {"perm": "2", "superperm": 0, "allperm": 0} # Fallback
     }
-    response = requests.post(url, json=payload)
-    if response.status_code == 201:
-        return f"✅ Ticket created successfully: {response.json().get('data', {}).get('ticketNumber')}"
-    return f"❌ Failed to create ticket: {response.text}"
-
-@tool
-def save_conversation_summary(conversation_id: str, summary: str, topic: str, resolution_status: str):
-    """
-    Persists the final conversation summary to the backend.
-    """
-    # Use existing n8n/conversation endpoint or create a specific summary endpoint 
-    # matching the n8n logic: https://backend-prod.julleyonline.co.in/api/v1/customer-support/n8n/conversation
-    url = "https://backend-prod.julleyonline.co.in/api/v1/customer-support/n8n/conversation" 
-    payload = {
-        "conversationId": conversation_id,
-        "summary": summary,
-        "topic": topic,
-        # status mapping if needed by backend logic
+    role = payload.get("userRole", "USER").upper()
+    perms = ROLE_MAP.get(role, ROLE_MAP["USER"])
+    
+    return {
+        "message": payload.get("message"),
+        "conversationId": payload.get("conversationId"),
+        "sessionId": payload.get("sessionId"),
+        "accessToken": payload.get("accessToken"),
+        "userName": payload.get("userName", "Unknown"),
+        "userEmail": payload.get("userEmail", "Not provided"),
+        **perms
     }
-    requests.post(url, json=payload)
-    return "Summary saved."
-
-def get_support_team(user_context):
-    # Support Agent for document retrieval and friendly guidance
-    support_agent = Agent(
-        name="Julley Support",
-        model=Gemini(id="gemini-1.5-flash"),
-        db=db,
-        knowledge=Knowledge(vector_db=vector_db),
-        search_knowledge=True,
-        add_history_to_context=True,
-        num_history_runs=10,
-        instructions=[f"You are helping {user_context['userName']}. Answer only from docs."]
-    )
-    
-    # Analyzer Agent for detecting when human escalation is needed
-    analyzer_agent = Agent(
-        name="Ticket Analyzer",
-        model=Gemini(id="gemini-1.5-pro"),
-        tools=[create_support_ticket, save_conversation_summary],
-        instructions=[
-            "Monitor conversation history for unresolved issues or explicit ticket requests.",
-            "If the user says 'Thank you' or indicates the issue is resolved:",
-            "  1. Generate a structured summary of the conversation.",
-            "  2. Provide a friendly closing message (vary the phrasing).",
-            "  3. Call the 'save_conversation_summary' tool to persist the summary.",
-            "If the user confirms they want a ticket:",
-            "  1. Summarize the main issue.",
-            "  2. Use the 'create_support_ticket' tool.",
-            "  3. Inform the user of the ticket ID."
-        ]
-    )
-    
-    return Agent(team=[support_agent, analyzer_agent])
 ```
+
+### B. Agent Implementation
+We use a specialized Team approach to handle RAG queries and structural conversation analysis.
+
+#### 1. Support Agent (The Responder)
+*   **Prompt**: Follows `prompt.md` strictly.
+*   **Logic**: Uses permission-based tool selection. If `perm != 0`, it uses the `PERMISSIONS` tool. If `superperm != 0`, it uses `SUPERPERMISSIONS`. If `allperm != 0`, it uses `ADMIN`.
+*   **Knowledge**: Searches `cs_agno_vectordb1` (Schema: `ai`).
+
+#### 2. Analyzer Agent (The Task Master)
+*   **Role**: Detects when a conversation has ended or when a ticket is requested (replicating "Rename response variable" and "AI Agent1").
+*   **Logic**: Parses the final turn to decide between standard message saving or full ticket escalation.
+
+### C. Backend API Configurations
+
+#### 1. Save Messages API (Standard Chat Flow)
+**Endpoint**: `POST /api/v1/customer-support/n8n/messages`
+**Trigger**: Every message turn where no ticket is created (n8n "Save Messages1" node).
+```json
+{
+  "Authorization": "Bearer {{accessToken}}",
+  "conversationId": "uuid-123",
+  "userId": "user-456",
+  "tenantId": "customer-abc",
+  "sessionId": "session-xyz",
+  "userName": "John Doe",
+  "userEmail": "john@example.com",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "messages": [
+    {"senderType": "user", "content": "..."},
+    {"senderType": "assistant", "content": "..."}
+  ]
+}
+```
+
+#### 2. Create Ticket API (Escalation Flow)
+**Endpoint**: `POST /api/v1/customer-support/n8n/ticket`
+**Trigger**: User confirms ticket intent (n8n "Create Ticket1" node).
+```json
+{
+  "Authorization": "Bearer {{accessToken}}",
+  "conversationId": "uuid-123",
+  "userId": "user-456",
+  "title": "Topic from Analyzer",
+  "description": "Main Issue from Analyzer",
+  "summary": "Full summary from Analyzer",
+  "userName": "John Doe",
+  "userEmail": "john@example.com",
+  "conversationHistory": [...],
+  "timestamp": "..."
+}
+```
+
+#### 3. Save Conversation API (Closer Flow)
+**Endpoint**: `POST /api/v1/customer-support/n8n/conversation`
+**Trigger**: When a conversation is ended/ticketed (n8n "Save Conversation (Ticket)1" node).
+```json
+{
+  "Authorization": "Bearer {{accessToken}}",
+  "topic": "Brief category",
+  "description": "Short problem description",
+  "summary": "Detailed narrative summary",
+  "messageCount": 5,
+  "closedAt": 171XXXXXXX
+}
+```
+
+### D. Memory Management & Database Schema
+
+The system utilizes two levels of memory to enable session continuity and historical retrieval.
+
+#### 1. Short-Term Memory (Active Session)
+*   **Mechanism**: Agno `PostgresDb` session storage.
+*   **Behavior**: Handled via `sessionId`. Each `sessionId` maintains a discrete context window for the current interaction.
+
+#### 2. Long-Term Memory (History Retrieval)
+*   **Mechanism**: Periodic sync to Thanos Backend (`cs_chat_memory`).
+*   **Behavior**: When a user returns or starts a "New Chat" vs. "History Chat," the system matches the `conversationId`.
+
+#### Database Schema: `cs_agno_longterm_memory` (For Continuation Logic)
+This table stores the ground truth for all sessions, allowing users to pick up where they left off.
+
+```sql
+CREATE TABLE ai.cs_agno_longterm_memory (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(255),
+    conversation_id VARCHAR(255),
+    user_id VARCHAR(255),
+    tenant_id VARCHAR(255),
+    message JSONB, -- Stores {type: 'human'/'ai', content: '...'}
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Agent Memory Initialization Code
+```python
+db = PostgresDb(db_url=DB_URL, session_table="cs_agno_longterm_memory", db_schema="ai")
+
+agent = Agent(
+    team=[support_agent, analyzer_agent],
+    db=db,
+    # Context Loading Logic:
+    # 1. If conversationId exists in request, pre-load history from cs_chat_memory
+    # 2. Store current turn into cs_agno_longterm_memory for immediate speed
+    # 3. Async push to Thanos Backend for persistent long-term visibility
+)
+```
+
 
 ## 4. Phase 3: ThanosBE Integration (Refactoring)
 
@@ -307,17 +358,18 @@ The existing frontend architecture is already compatible. No logic changes are r
 
 ## 7. Chat History & Session Revisit Logic
 
-### A. Agno Persistence: `cs_agent_sessions` Table
-Agno automatically creates and manages the `cs_agent_sessions` table if it doesn't exist when the `PostgresDb` is initialized.
+### A. Agno Persistence: `cs_agno_longterm_memory` Table
+Agno automatically creates and manages the `cs_agno_longterm_memory` table if it doesn't exist when the `PostgresDb` is initialized.
 
 **1. Implementation Code (Python Agent)**
 In `Phase 2`, the agent initialization sets up the connection:
 ```python
 # Session Storage Configuration
-# Agno auto-creates table "cs_agent_sessions" if missing
+# Agno auto-creates table "cs_agno_longterm_memory" if missing
 db = PostgresDb(
     db_url=DB_URL, 
-    session_table="cs_agent_sessions"
+    session_table="cs_agno_longterm_memory",
+    db_schema="ai"
 )
 
 support_agent = Agent(
@@ -331,7 +383,7 @@ support_agent = Agent(
 **2. Manual Table Schema (Reference)**
 If you prefer to create it manually via SQL migration (recommended for production control):
 ```sql
-CREATE TABLE IF NOT EXISTS cs_agent_sessions (
+CREATE TABLE IF NOT EXISTS ai.cs_agno_longterm_memory (
     session_id TEXT PRIMARY KEY,
     user_id TEXT,
     memory JSONB,
@@ -345,8 +397,8 @@ CREATE TABLE IF NOT EXISTS cs_agent_sessions (
 Every message turn is synced to the primary ThanosBE database for long-term storage and admin visibility.
 
 **1. Sync Flow**
-1.  **User Message**: Received by Agno → Stored in `cs_agent_sessions` (Active Memory).
-2.  **AI Response**: Generated by Agno → Stored in `cs_agent_sessions` (Active Memory).
+1.  **User Message**: Received by Agno → Stored in `cs_agno_longterm_memory` (Active Memory).
+2.  **AI Response**: Generated by Agno → Stored in `cs_agno_longterm_memory` (Active Memory).
 3.  **Callback**: Agno triggers a background task to call `POST /api/v1/customer-support/agent-callback/messages`.
 
 **2. Implementation (Python Agent Hook)**
@@ -373,12 +425,78 @@ support_agent = Agent(
 )
 ```
 
-## 8. Step-by-Step Implementation
+## 9. API Server Implementation & Deployment
+
+To move from n8n webhooks to a dedicated Agno service, we will wrapping the Agent Team in a **FastAPI** application. This service will act as the unified "Brain" receiving requests from the Thanos Backend.
+
+### A. FastAPI Server Implementation (`main.py`)
+This script initializes the Agno Team and exposes the `/chat` endpoint.
+
+```python
+from fastapi import FastAPI, HTTPException, Request
+from agno.agent import Agent
+from .agents import get_support_team # Logic from Phase 2
+
+app = FastAPI(title="Agno AgentOS Service")
+
+@app.post("/chat")
+async def handle_chat(request: Request):
+    payload = await request.json()
+    
+    # 1. Validate Context (Logic from Phase 2)
+    user_context = validate_user_context(payload)
+    
+    # 2. Initialize Team with Session ID
+    # Agno uses session_id to automatically pull history from Postgres
+    team = get_support_team(user_context)
+    
+    # 3. Execute Run
+    # The 'message' is the user's current query
+    response = team.run(
+        message=user_context["message"],
+        session_id=user_context["conversationId"] 
+    )
+    
+    return {"output": response.content}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+### B. Deployment Strategy (Docker)
+
+We will package the service into a lightweight Docker container for consistent deployment across environments.
+
+**Dockerfile:**
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Use Gunicorn with Uvicorn workers for production stability
+CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8000"]
+```
+
+### C. Environment Configuration
+The following variables must be set in the deployment environment (e.g., Docker Secret, K8s ConfigMap):
+*   `GOOGLE_API_KEY`: For Gemini 1.5 Access.
+*   `DATABASE_URL`: Connection string for Thanos Postgres (PgVector).
+*   `THANOS_BE_URL`: URL for Thanos Backend (for callbacks).
+*   `THANOS_API_KEY`: Security key for Agno-to-Backend communication.
+
+## 10. Updated Step-by-Step Implementation
 
 | Step | Action | Owner |
 | :--- | :--- | :--- |
-| 1 | Setup Agno AgentOS with `PostgresDb` storage for sessions | DevOps/AI |
-| 2 | Run Python Ingestion Script to populate `cs_vectordb_v2` | AI |
-| 3 | Deploy Agno Agent Team with metadata filtering logic | AI |
-| 4 | Update `ThanosBE` to forward requests to Agno and handle ticket callbacks | Backend |
-| 5 | End-to-end verification of role-based document access | QA |
+| 1 | Setup Agno AgentOS with `PostgresDb` (`cs_agno_longterm_memory`) storage for sessions | DevOps/AI |
+| 2 | Run Python Ingestion Script to populate `cs_agno_vectordb1` | AI |
+| 3 | Develop FastAPI wrapper with `/chat` and `/health` endpoints | AI |
+| 4 | Deploy Agno Service to Production via Docker (Gunicorn/Uvicorn) | DevOps |
+| 5 | Update `ThanosBE` to forward requests to Agno and handle ticket callbacks | Backend |
+| 6 | End-to-end verification of role-based document access and ticket creation | QA |
+| 7 | Decommission legacy n8n chat nodes | DevOps |

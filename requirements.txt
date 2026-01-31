@@ -1,0 +1,9 @@
+agno==2.4.7
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+psycopg[binary]
+python-dotenv
+requests
+fastapi
+uvicorn

@@ -1,0 +1,19 @@
+__pycache__/
+.env
+.DS_Store
+venv/
+*.json
+!credentials.json
+# Logs
+*.log
+# Editor
+.vscode/
+.idea/
+
+# Test and debug scripts
+test_*.py
+check_*.py
+debug_*.py
+inspect_*.py
+list_*.py
+rag_basic.py
