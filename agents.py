@@ -90,11 +90,9 @@ def create_support_ticket(agent: Agent, title: str, main_issue: str, summary: st
     }
     
     token = getattr(agent, "accessToken", "")
-    n8n_key = os.environ.get("N8N_API_KEY", "")
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {getattr(agent, 'accessToken', '')}",
         "Content-Type": "application/json",
-        "X-API-Key": n8n_key
     }
     
     try:
@@ -132,15 +130,13 @@ def save_conversation_summary(agent: Agent, summary: str, topic: str, main_issue
         "userName": getattr(agent, "userName", "Unknown"),
         "userEmail": getattr(agent, "userEmail", "Not provided"),
         "messageCount": len(agent.get_chat_history()) if hasattr(agent, "get_chat_history") else 0,
-        "closedAt": datetime.now().isoformat(),
-        "lastMessageAt": datetime.now().isoformat()
+        "closedAt": int(datetime.now().timestamp() * 1000),
+        "lastMessageAt": int(datetime.now().timestamp() * 1000)
     }
-    
     token = getattr(agent, "accessToken", "")
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {getattr(agent, 'accessToken', '')}",
         "Content-Type": "application/json",
-        "X-API-Key": os.environ.get("N8N_API_KEY", "")
     }
     
     try:
@@ -227,8 +223,8 @@ def sync_turn_to_backend(agent: Any, response: Any):
     }
     headers = {
         "Authorization": f"Bearer {getattr(agent, 'accessToken', '')}",
-        "X-API-Key": os.environ.get("N8N_API_KEY", "")
-    }
+        "Content-Type": "application/json",
+        }
     try:
         requests.post(url, json=payload, headers=headers, timeout=5)
     except Exception as e:
