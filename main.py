@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 import uvicorn
-from agents import get_support_team
+from agents import get_support_team, knowledge, agent_os_db
 
 app = FastAPI(title="Agno AgentOS - Thanos CS")
 
@@ -69,9 +69,21 @@ async def handle_chat(payload: ChatPayload):
              
         team.last_user_msg = context["message"] # For sync tool
         
+        # Prepare Metadata for AgentOS Visibility
+        run_metadata = {
+            "tenantId": context.get("tenantId"),
+            "userId": context.get("userId"),
+            "userRole": context.get("userRole"),
+            "userName": context.get("userName"),
+            "userEmail": context.get("userEmail"),
+            "source": "external_frontend"
+        }
+        
         response = team.run(
             context["message"],
-            session_id=session_id
+            session_id=session_id,
+            user_id=context.get("userId") or context.get("userEmail"),
+            metadata=run_metadata
         )
         
         # 4. Sync turn to backend
@@ -99,5 +111,35 @@ async def handle_chat(payload: ChatPayload):
 async def health_check():
     return {"status": "healthy", "service": "agno-agent-thanos"}
 
+from agno.os import AgentOS
+
+# --- AgentOS Control Plane Integration ---
+# Create a default agent for the Control Plane (Admin Context)
+playground_context = {
+    "userName": "AgentOS Admin",
+    "userEmail": "admin@agno.com",
+    "perm": "0",
+    "superperm": "0",
+    "allperm": "1",
+    "userRole": "ADMIN",
+    "conversationId": "agentos-session",
+    "tenantId": "Thanos"
+}
+playground_agent = get_support_team(playground_context)
+
+# Initialize AgentOS with the existing FastAPI app
+agent_os = AgentOS(
+    agents=[playground_agent],
+    db=agent_os_db,     # Unified Production DB (ai schema / agno_* tables)
+    knowledge=[knowledge],
+    base_app=app,
+    tracing=True,      # Enable Tracking
+    telemetry=True,    # Enable Metrics
+)
+
+# Get the final application with all AgentOS routes
+app = agent_os.get_app()
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Ensure it binds to localhost for AgentOS security
+    uvicorn.run(app, host="127.0.0.1", port=8000)

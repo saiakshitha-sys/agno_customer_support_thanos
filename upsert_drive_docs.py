@@ -17,32 +17,13 @@ from agno.knowledge.embedder.google import GeminiEmbedder
 # Load environment variables
 load_dotenv()
 
-# Configuration
-DB_URL = os.getenv("DATABASE_URL")
-# if DB_URL:
-#     DB_URL = DB_URL.strip().strip("'").strip('"')
-# else:
-#     DB_URL = "postgresql://ai:ai@localhost:5432/thanos"
+from agents import DB_URL, TABLE_NAME, vector_db, knowledge
 
-TABLE_NAME = "cs_agno_vectordb1"
 SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json").strip()
 FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 if FOLDER_ID:
     FOLDER_ID = FOLDER_ID.strip()
 
-# 1. Setup Vector DB & Knowledge Base
-# Using Gemini Embedder for consistency with the Gemini agent team
-vector_db = PgVector(
-    table_name=TABLE_NAME,
-    schema="ai",
-    db_url=DB_URL,
-    search_type=SearchType.hybrid,
-    embedder=GeminiEmbedder(id="text-embedding-004", dimensions=768)
-)
-
-knowledge = Knowledge(
-    vector_db=vector_db,
-)
 # Ensure table exists
 # vector_db.create() # Usually handled by Agno when inserting if configured
 
